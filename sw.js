@@ -1,8 +1,13 @@
-const CACHE_NAME = 'sphero-ctrl-v1';
+// v4 — fixed asset paths for GitHub Pages subdirectory deployment
+const CACHE_NAME = 'sphero-ctrl-v4';
+
+// We use self.location to derive the base path automatically,
+// so this works whether deployed at root or in a subdirectory (GitHub Pages).
+const BASE = self.location.pathname.replace(/\/sw\.js$/, '');
 const ASSETS = [
-  '/',
-  '/index.html',
-  '/manifest.json',
+  BASE + '/',
+  BASE + '/index.html',
+  BASE + '/manifest.json',
 ];
 
 self.addEventListener('install', (e) => {
@@ -22,18 +27,22 @@ self.addEventListener('activate', (e) => {
 });
 
 self.addEventListener('fetch', (e) => {
-  // Network first for fonts/external, cache first for app shell
-  if (e.request.url.includes('fonts.googleapis') || e.request.url.includes('fonts.gstatic')) {
+  // Network first for external resources (fonts etc)
+  if (!e.request.url.startsWith(self.location.origin)) {
     e.respondWith(
       caches.open(CACHE_NAME).then(cache =>
         cache.match(e.request).then(cached => {
-          const network = fetch(e.request).then(res => { cache.put(e.request, res.clone()); return res; });
+          const network = fetch(e.request).then(res => {
+            cache.put(e.request, res.clone());
+            return res;
+          });
           return cached || network;
         })
       )
     );
     return;
   }
+  // Cache first for app shell, falling back to network
   e.respondWith(
     caches.match(e.request).then(cached => cached || fetch(e.request))
   );
