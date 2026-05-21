@@ -1,8 +1,9 @@
 {
-  "name": "Sphero Controller",
-  "short_name": "SpheroCTRL",
+  "name": "Spheroid Controller",
+  "short_name": "SpheroidCTRL",
   "description": "Control your Sphero robot via BLE with a Bluetooth gamepad",
-  "start_url": "/index.html",
+  "start_url": "/spheroid-controller/index.html",
+  "scope": "/spheroid-controller/"
   "display": "standalone",
   "orientation": "portrait",
   "background_color": "#0a0a0f",
