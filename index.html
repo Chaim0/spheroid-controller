@@ -279,7 +279,7 @@
   </div>
 </div>
 <div id="toast"></div>
-<div id="version-badge">v0.4</div>
+<div id="version-badge">v0.5</div>
 
 <script>
 // ═══════════════════════════════════════════════════════════════════════════
@@ -332,8 +332,7 @@ const CMD_SLEEP         = 0x01;
 const CMD_GET_BATTERY   = 0x03;
 const CMD_ROLL          = 0x07;
 const CMD_RESET_HEADING = 0x06;
-const CMD_SET_LED       = 0x0E;   // set single LED (index, r, g, b)
-const CMD_SET_ALL_LEDS  = 0x1A;   // set all LEDs by mask
+const CMD_SET_LED       = 0x0E;   // set LEDs with mapping (mask + RGB)
 
 let seqNum = 0;
 
@@ -577,15 +576,20 @@ function delay(ms) { return new Promise(r => setTimeout(r, ms)); }
 // DRIVE COMMANDS
 // ═══════════════════════════════════════════════════════════════════════════
 
-let lastHeading = 0;
+// headingOffset is the pilot's calibrated "forward" direction.
+// In aim mode, right stick rotates it live; outside aim mode, right stick
+// adds a steering component to left-stick heading.
+let lastHeading  = 0;
+let headingOffset = 0;
+let aimMode = false;
 
 async function roll(speed, heading) {
   const maxSpd = parseInt(document.getElementById('speed-limit').value);
-  const s = Math.min(Math.abs(Math.round(speed)), maxSpd);
-  const offset = parseInt(document.getElementById('heading-offset').value);
-  const h = ((heading + offset) % 360 + 360) % 360;
-  // Roll packet data: [speed, headingHi, headingLo, flags]
-  // flags: 0x01 = forward
+  let s = Math.min(Math.abs(Math.round(speed)), maxSpd);
+  // Sphero Mini stalls below ~85. Remap: any non-zero input → [85, maxSpd].
+  if (s > 0) s = Math.round(85 + (s / 255) * (maxSpd - 85));
+  s = Math.min(s, 255);
+  const h = ((heading + headingOffset) % 360 + 360) % 360;
   const data = [s, ...toUint16BE(h), 0x01];
   await sendPacket(buildPacket(DID_DRIVING, CMD_ROLL, data));
   document.getElementById('speed-display').textContent = s;
@@ -594,26 +598,36 @@ async function roll(speed, heading) {
 }
 
 async function stopRoll() {
-  const offset = parseInt(document.getElementById('heading-offset').value);
-  const h = ((lastHeading + offset) % 360 + 360) % 360;
+  const h = ((lastHeading + headingOffset) % 360 + 360) % 360;
   await sendPacket(buildPacket(DID_DRIVING, CMD_ROLL, [0, ...toUint16BE(h), 0x00]));
   document.getElementById('speed-display').textContent = '0';
   updateViz(0, lastHeading);
 }
 
 async function resetHeading() {
+  // Reset the robot's internal yaw reference to current orientation
   await sendPacket(buildPacket(DID_DRIVING, CMD_RESET_HEADING));
+  headingOffset = 0;
+  lastHeading = 0;
+  document.getElementById('heading-offset').value = 0;
+  document.getElementById('heading-offset-val').textContent = '0°';
+  document.getElementById('heading-display-chip').textContent = '0°';
+  updateViz(0, 0);
   log('Heading reset ✓', 'ok');
 }
 
 async function setAllLEDs(r, g, b) {
   if (!cmdChar) return;
-  // CMD_SET_LED: index 0x00 (main body LED), then r, g, b
-  await sendPacket(buildPacket(DID_LED, CMD_SET_LED, [0x00, r, g, b]));
-  // Also try the "all LEDs" command in case the first doesn't work
-  // The all-LED mask for Mini is 0x00000007 (3 LEDs), data = mask(4) + r,g,b per LED
-  const mask = [0x00, 0x00, 0x00, 0x0E];
-  await sendPacket(buildPacket(DID_LED, CMD_SET_ALL_LEDS, [...mask, r, g, b, r, g, b, r, g, b]));
+  // Sphero Mini LED command: DID=0x1A (userIO), CID=0x0E (setLEDsWithMapping)
+  // Payload: [0x00, 0x00, 0x00, mask, R, G, B]
+  // mask 0x07 = front RGB LED (channels 0,1,2)
+  await sendPacket(buildPacket(DID_LED, CMD_SET_LED, [0x00, 0x00, 0x00, 0x07, r, g, b]));
+}
+
+async function setAimLED(brightness) {
+  if (!cmdChar) return;
+  // mask 0x01 = back (aiming) LED, single channel
+  await sendPacket(buildPacket(DID_LED, CMD_SET_LED, [0x00, 0x00, 0x00, 0x01, brightness]));
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -657,16 +671,58 @@ async function pollGamepad() {
   const ly = applyDeadzone(gp.axes[1]);
   const rx = applyDeadzone(gp.axes[2] ?? 0);
   const ry = applyDeadzone(gp.axes[3] ?? 0);
+  const rMag = Math.sqrt(rx*rx + ry*ry);
 
+  // ── B/Circle (1) = Toggle aim mode ──────────────────────────────────
+  if (gp.buttons[1]?.pressed && !prevButtons[1]) {
+    aimMode = !aimMode;
+    if (aimMode) {
+      // Enter aim mode: stop moving, turn on white back LED
+      await stopRoll();
+      await setAimLED(255);
+      updateAimButton(true);
+      log('Aim mode ON — rotate right stick to aim', 'info');
+      toast('Aim mode ON');
+    } else {
+      // Exit aim mode: turn off back LED, commit offset
+      await setAimLED(0);
+      updateAimButton(false);
+      log(`Aim mode OFF — offset: ${headingOffset}°`, 'ok');
+      toast(`Aim set: ${headingOffset}°`);
+    }
+  }
+
+  if (aimMode) {
+    // In aim mode: right stick rotates headingOffset, left stick disabled
+    if (rMag > 0.1 && shouldSend) {
+      const aimAngle = (Math.atan2(rx, -ry) * 180 / Math.PI + 360) % 360;
+      headingOffset = Math.round(aimAngle);
+      document.getElementById('heading-offset').value = headingOffset;
+      document.getElementById('heading-offset-val').textContent = `${headingOffset}°`;
+      document.getElementById('heading-display-chip').textContent = `${headingOffset}°`;
+      updateViz(0, headingOffset);
+    }
+    // Store buttons and skip driving
+    for (let i = 0; i < gp.buttons.length; i++) prevButtons[i] = gp.buttons[i]?.pressed;
+    return;
+  }
+
+  // ── Normal drive mode ────────────────────────────────────────────────
   const mag = Math.min(1, Math.sqrt(lx*lx + ly*ly));
   const speed = mag * 255;
 
   let heading = lastHeading;
   if (mag > 0.1) {
+    // Left stick sets direction
     heading = (Math.atan2(lx, -ly) * 180 / Math.PI + 360) % 360;
-    lastHeading = heading;
-  } else if (Math.sqrt(rx*rx+ry*ry) > 0.1) {
-    heading = (Math.atan2(rx, -ry) * 180 / Math.PI + 360) % 360;
+    // Right stick adds rotation bias when both are active
+    if (rMag > 0.15) {
+      const rightAngle = (Math.atan2(rx, -ry) * 180 / Math.PI + 360) % 360;
+      // Blend: mostly left stick direction, right stick nudges it
+      const blend = rMag * 0.4;
+      const diff = ((rightAngle - heading + 540) % 360) - 180;
+      heading = (heading + diff * blend + 360) % 360;
+    }
     lastHeading = heading;
   }
 
@@ -683,14 +739,14 @@ async function pollGamepad() {
 
   if ((up||down||left||right) && mag < 0.1 && shouldSend) {
     let dh = 0;
-    if (up)                      dh = 0;
-    if (down)                    dh = 180;
-    if (left)                    dh = 270;
-    if (right)                   dh = 90;
-    if (up && right)             dh = 45;
-    if (up && left)              dh = 315;
-    if (down && right)           dh = 135;
-    if (down && left)            dh = 225;
+    if (up)              dh = 0;
+    if (down)            dh = 180;
+    if (left)            dh = 270;
+    if (right)           dh = 90;
+    if (up && right)     dh = 45;
+    if (up && left)      dh = 315;
+    if (down && right)   dh = 135;
+    if (down && left)    dh = 225;
     lastHeading = dh;
     await roll(150, dh);
   }
@@ -698,10 +754,6 @@ async function pollGamepad() {
   // A/Cross (0) = E-STOP
   if (gp.buttons[0]?.pressed && !prevButtons[0]) {
     await stopRoll(); log('E-STOP (A)', 'warn');
-  }
-  // B/Circle (1) = Reset heading
-  if (gp.buttons[1]?.pressed && !prevButtons[1]) {
-    await resetHeading();
   }
   // X/Square (2) = Cycle LED
   if (gp.buttons[2]?.pressed && !prevButtons[2]) {
@@ -717,10 +769,7 @@ async function pollGamepad() {
     log('Wake sent', 'ok');
   }
 
-  for (let i = 0; i < gp.buttons.length; i++) {
-    prevButtons[i] = gp.buttons[i]?.pressed;
-  }
-
+  for (let i = 0; i < gp.buttons.length; i++) prevButtons[i] = gp.buttons[i]?.pressed;
   updateViz(speed, Math.round(heading));
 }
 
@@ -884,7 +933,21 @@ function toast(msg) {
 
 document.getElementById('btn-connect-sphero').addEventListener('click', connectSphero);
 document.getElementById('btn-disconnect').addEventListener('click', disconnectSphero);
-document.getElementById('btn-calibrate').addEventListener('click', async () => { await resetHeading(); toast('Heading reset!'); });
+document.getElementById('btn-calibrate').addEventListener('click', async () => {
+  aimMode = !aimMode;
+  if (aimMode) {
+    await stopRoll();
+    await setAimLED(255);
+    updateAimButton(true);
+    log('Aim mode ON — use heading offset slider to aim', 'info');
+    toast('Aim mode ON');
+  } else {
+    await setAimLED(0);
+    updateAimButton(false);
+    log(`Aim mode OFF — offset: ${headingOffset}°`, 'ok');
+    toast(`Aim set: ${headingOffset}°`);
+  }
+});
 document.getElementById('btn-wake').addEventListener('click', async () => { await sendPacket(buildPacket(DID_POWER, CMD_WAKE)); log('Wake sent','ok'); });
 document.getElementById('btn-sleep').addEventListener('click', async () => { await sendPacket(buildPacket(DID_POWER, CMD_SLEEP)); log('Sleep sent','ok'); });
 document.getElementById('estop').addEventListener('click', async () => { await stopRoll(); toast('STOP!'); });
@@ -894,11 +957,31 @@ document.getElementById('btn-set-color').addEventListener('click', () => {
   log(`Custom color: ${hex}`,'ok');
 });
 document.getElementById('speed-limit').addEventListener('input', e => { document.getElementById('speed-limit-val').textContent = e.target.value; });
-document.getElementById('heading-offset').addEventListener('input', e => { document.getElementById('heading-offset-val').textContent = `${e.target.value}°`; });
+document.getElementById('heading-offset').addEventListener('input', e => {
+  headingOffset = parseInt(e.target.value);
+  document.getElementById('heading-offset-val').textContent = `${headingOffset}°`;
+  document.getElementById('heading-display-chip').textContent = `${headingOffset}°`;
+  updateViz(0, headingOffset);
+});
 
 // ═══════════════════════════════════════════════════════════════════════════
 // INIT
 // ═══════════════════════════════════════════════════════════════════════════
+
+function updateAimButton(active) {
+  const btn = document.getElementById('btn-calibrate');
+  if (active) {
+    btn.textContent = '◎ Aiming…';
+    btn.style.borderColor = 'var(--warn)';
+    btn.style.color = 'var(--warn)';
+    btn.style.boxShadow = '0 0 10px var(--warn)';
+  } else {
+    btn.textContent = '⊕ Aim';
+    btn.style.borderColor = '';
+    btn.style.color = '';
+    btn.style.boxShadow = '';
+  }
+}
 
 buildColorPresets();
 // Start drive loop even before gamepad is detected (it idles until needed)
