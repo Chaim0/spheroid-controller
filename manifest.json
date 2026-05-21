@@ -1,0 +1,26 @@
+{
+  "name": "Sphero Controller",
+  "short_name": "SpheroCTRL",
+  "description": "Control your Sphero robot via BLE with a Bluetooth gamepad",
+  "start_url": "/index.html",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0a0a0f",
+  "theme_color": "#0a0a0f",
+  "icons": [
+    {
+      "src": "icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ],
+  "categories": ["utilities", "games"],
+  "lang": "en"
+}
