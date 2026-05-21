@@ -1,5 +1,5 @@
 // v4 — fixed asset paths for GitHub Pages subdirectory deployment
-const CACHE_NAME = 'sphero-ctrl-v4';
+const CACHE_NAME = 'sphero-ctrl-v5';
 
 // We use self.location to derive the base path automatically,
 // so this works whether deployed at root or in a subdirectory (GitHub Pages).
